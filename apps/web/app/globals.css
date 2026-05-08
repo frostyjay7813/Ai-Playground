@@ -48,6 +48,10 @@ body {
   box-shadow: 0 8px 30px rgba(31, 34, 49, 0.08);
 }
 
+.panel-phone {
+  border-color: #b9d9ff;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -148,4 +152,26 @@ pre {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+.phone-link {
+  word-break: break-word;
+}
+
+.shell-phone {
+  max-width: 700px;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    padding: 20px 14px 40px;
+  }
+
+  .panel {
+    padding: 14px;
+  }
+
+  .member-actions {
+    flex-direction: column;
+  }
 }

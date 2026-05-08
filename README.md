@@ -88,6 +88,12 @@ The local auth boundary is user-scoped by `x-ai-user-id` (or `?userId=` for SSE 
 - Existing projects require membership before provider keys, runs, history, or streams are accessible.
 - Project owners can add, update, and remove members through the web UI.
 
+## Phone Inbox
+
+The `Command Inbox` section at the top of the app is the phone-friendly entry point. It stores short instructions per project, lets project editors mark them as `open`, `working`, or `done`, and keeps the latest messages visible in the same workspace.
+
+Owners can also generate a project phone link from the UI. That link opens a reduced phone mode with a project-scoped token, so you can send instructions from your phone without typing a desktop user ID.
+
 ## Tools
 
 Available built-in tools:

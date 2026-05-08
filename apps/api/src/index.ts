@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import { createRun, createRunSchema } from "@ai-playground/ai-core";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
+import { randomUUID } from "node:crypto";
 import { db } from "./lib/db.js";
 import type { Run } from "@ai-playground/sdk";
 import { z } from "zod";
@@ -11,15 +12,18 @@ import {
   canAccessConversation,
   canAccessProject,
   canAccessRun,
+  canEditProject,
   canManageProject,
   createOwnedProject,
   listProjectMembers,
   requireUser,
 } from "./lib/auth.js";
+import { generatePhoneToken, hashPhoneToken } from "./lib/phone.js";
 import { listTools, runTool } from "./lib/tools.js";
 
 const app = Fastify({ logger: true });
 const port = Number(process.env.API_PORT ?? 4000);
+const host = process.env.API_HOST ?? "127.0.0.1";
 const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
 const redisConnection = new Redis(redisUrl, { maxRetriesPerRequest: null });
 const runQueue = new Queue("chat-runs", { connection: redisConnection });
@@ -43,6 +47,37 @@ const setProjectMemberSchema = z.object({
 const updateProjectMemberRoleSchema = z.object({
   role: z.enum(["owner", "editor", "viewer"]),
 });
+const createInboxMessageSchema = z.object({
+  body: z.string().min(1).max(4000),
+});
+const updateInboxMessageSchema = z.object({
+  status: z.enum(["open", "working", "done"]),
+});
+
+const readPhoneToken = (request: { query?: unknown }) => {
+  const query = request.query as { token?: string } | undefined;
+  return query?.token;
+};
+
+const validatePhoneAccess = async (projectId: string, token: string) => {
+  const tokenHash = hashPhoneToken(token);
+  const result = await db.query(
+    `select phone_user_id
+     from project_phone_links
+     where project_id = $1 and token_hash = $2`,
+    [projectId, tokenHash]
+  );
+  if (!result.rowCount) {
+    return null;
+  }
+  await db.query(
+    `update project_phone_links
+     set last_used_at = now()
+     where project_id = $1`,
+    [projectId]
+  );
+  return { phoneUserId: String(result.rows[0]?.phone_user_id) };
+};
 
 await app.register(cors, {
   origin: true,
@@ -51,6 +86,163 @@ await app.register(cors, {
 });
 
 app.get("/health", async () => ({ service: "api", ok: true }));
+
+app.get("/projects/:projectId/inbox", async (request, reply) => {
+  const user = await requireUser(request, reply);
+  if (!user) return;
+  const { projectId } = request.params as { projectId: string };
+  if (!(await canAccessProject(projectId, user.id))) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const result = await db.query(
+    `select id, project_id, user_id, body, status, created_at, updated_at
+     from project_inbox_messages
+     where project_id = $1
+     order by created_at desc
+     limit 50`,
+    [projectId]
+  );
+  return result.rows.map((row: Record<string, unknown>) => ({
+    id: row.id,
+    projectId: row.project_id,
+    userId: row.user_id,
+    body: row.body,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+});
+
+app.get("/phone/projects/:projectId/inbox", async (request, reply) => {
+  const { projectId } = request.params as { projectId: string };
+  const token = readPhoneToken(request);
+  if (!token) {
+    return reply.status(401).send({ error: "missing_token" });
+  }
+  const access = await validatePhoneAccess(projectId, token);
+  if (!access) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const result = await db.query(
+    `select id, project_id, user_id, body, status, created_at, updated_at
+     from project_inbox_messages
+     where project_id = $1
+     order by created_at desc
+     limit 50`,
+    [projectId]
+  );
+  return result.rows.map((row: Record<string, unknown>) => ({
+    id: row.id,
+    projectId: row.project_id,
+    userId: row.user_id,
+    body: row.body,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+});
+
+app.post("/phone/projects/:projectId/inbox", async (request, reply) => {
+  const { projectId } = request.params as { projectId: string };
+  const token = readPhoneToken(request);
+  if (!token) {
+    return reply.status(401).send({ error: "missing_token" });
+  }
+  const parsed = createInboxMessageSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "invalid_request",
+      details: parsed.error.flatten(),
+    });
+  }
+  const access = await validatePhoneAccess(projectId, token);
+  if (!access) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const result = await db.query(
+    `insert into project_inbox_messages (project_id, user_id, body)
+     values ($1, $2, $3)
+     returning id, created_at, updated_at`,
+    [projectId, access.phoneUserId, parsed.data.body]
+  );
+  return reply.status(201).send({
+    id: result.rows[0]?.id,
+    projectId,
+    userId: access.phoneUserId,
+    body: parsed.data.body,
+    status: "open",
+    createdAt: result.rows[0]?.created_at,
+    updatedAt: result.rows[0]?.updated_at,
+  });
+});
+
+app.post("/projects/:projectId/inbox", async (request, reply) => {
+  const user = await requireUser(request, reply);
+  if (!user) return;
+  const { projectId } = request.params as { projectId: string };
+  const parsed = createInboxMessageSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "invalid_request",
+      details: parsed.error.flatten(),
+    });
+  }
+  await createOwnedProject(projectId, user.id);
+  if (!(await canAccessProject(projectId, user.id))) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const result = await db.query(
+    `insert into project_inbox_messages (project_id, user_id, body)
+     values ($1, $2, $3)
+     returning id, created_at, updated_at`,
+    [projectId, user.id, parsed.data.body]
+  );
+  return reply.status(201).send({
+    id: result.rows[0]?.id,
+    projectId,
+    userId: user.id,
+    body: parsed.data.body,
+    status: "open",
+    createdAt: result.rows[0]?.created_at,
+    updatedAt: result.rows[0]?.updated_at,
+  });
+});
+
+app.post("/projects/:projectId/inbox/:messageId/status", async (request, reply) => {
+  const user = await requireUser(request, reply);
+  if (!user) return;
+  const { projectId, messageId } = request.params as { projectId: string; messageId: string };
+  const parsed = updateInboxMessageSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "invalid_request",
+      details: parsed.error.flatten(),
+    });
+  }
+  if (!(await canEditProject(projectId, user.id))) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const result = await db.query(
+    `update project_inbox_messages
+     set status = $3, updated_at = now()
+     where id = $1::uuid and project_id = $2
+     returning id, project_id, user_id, body, status, created_at, updated_at`,
+    [messageId, projectId, parsed.data.status]
+  );
+  if (!result.rowCount) {
+    return reply.status(404).send({ error: "not_found" });
+  }
+  const row = result.rows[0] as Record<string, unknown>;
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    userId: row.user_id,
+    body: row.body,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+});
 
 app.get("/projects/:projectId/members", async (request, reply) => {
   const user = await requireUser(request, reply);
@@ -67,6 +259,62 @@ app.get("/projects/:projectId/members", async (request, reply) => {
     role: row.role,
     createdAt: row.created_at,
   }));
+});
+
+app.post("/projects/:projectId/phone-link", async (request, reply) => {
+  const user = await requireUser(request, reply);
+  if (!user) return;
+  const { projectId } = request.params as { projectId: string };
+  await createOwnedProject(projectId, user.id);
+  if (!(await canManageProject(projectId, user.id))) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const phoneToken = generatePhoneToken();
+  const phoneUserId = randomUUID();
+  const tokenHash = hashPhoneToken(phoneToken);
+  await db.query(`insert into users (id, display_name) values ($1, $2)`, [phoneUserId, "Phone Inbox"]);
+  await db.query(
+    `insert into project_phone_links (project_id, phone_user_id, token_hash, created_by)
+     values ($1, $2, $3, $4)
+     on conflict (project_id)
+     do update set phone_user_id = excluded.phone_user_id,
+                   token_hash = excluded.token_hash,
+                   created_by = excluded.created_by,
+                   rotated_at = now(),
+                   last_used_at = null`,
+    [projectId, phoneUserId, tokenHash, user.id]
+  );
+  const baseUrl = process.env.WEB_BASE_URL ?? "http://localhost:3000";
+  return {
+    projectId,
+    phoneToken,
+    shareUrl: `${baseUrl}/?projectId=${encodeURIComponent(projectId)}&phone=1&token=${encodeURIComponent(phoneToken)}`,
+  };
+});
+
+app.get("/projects/:projectId/phone-link", async (request, reply) => {
+  const user = await requireUser(request, reply);
+  if (!user) return;
+  const { projectId } = request.params as { projectId: string };
+  if (!(await canManageProject(projectId, user.id))) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const result = await db.query(
+    `select created_at, rotated_at, last_used_at
+     from project_phone_links
+     where project_id = $1`,
+    [projectId]
+  );
+  if (!result.rowCount) {
+    return { projectId, configured: false };
+  }
+  return {
+    projectId,
+    configured: true,
+    createdAt: result.rows[0]?.created_at,
+    rotatedAt: result.rows[0]?.rotated_at,
+    lastUsedAt: result.rows[0]?.last_used_at,
+  };
 });
 
 app.post("/projects/:projectId/members", async (request, reply) => {
@@ -504,7 +752,7 @@ app.get("/chat/runs/:runId/stream", async (request, reply) => {
 });
 
 const start = async () => {
-  await app.listen({ port, host: "0.0.0.0" });
+await app.listen({ port, host });
 };
 
 start().catch((error) => {

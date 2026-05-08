@@ -32,6 +32,22 @@ type ProjectMember = {
   createdAt: string;
 };
 
+type InboxMessage = {
+  id: string;
+  projectId: string;
+  userId: string;
+  body: string;
+  status: "open" | "working" | "done";
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PhoneLink = {
+  projectId: string;
+  phoneToken: string;
+  shareUrl: string;
+};
+
 const defaultToolInput = (toolName: string) => {
   if (toolName === "math.evaluate") return JSON.stringify({ expression: "2 * (8 + 4)" }, null, 2);
   if (toolName === "text.summarize") {
@@ -67,8 +83,29 @@ export default function HomePage() {
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [memberUserId, setMemberUserId] = useState("");
   const [memberRole, setMemberRole] = useState<ProjectMember["role"]>("viewer");
+  const [inboxMessages, setInboxMessages] = useState<InboxMessage[]>([]);
+  const [inboxBody, setInboxBody] = useState("");
+  const [phoneToken, setPhoneToken] = useState("");
+  const [phoneMode, setPhoneMode] = useState(false);
+  const [phoneLink, setPhoneLink] = useState<PhoneLink | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+  const webBase = process.env.NEXT_PUBLIC_WEB_BASE_URL ?? "http://localhost:3000";
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const queryProject = searchParams.get("projectId");
+    const queryToken = searchParams.get("token") ?? "";
+    const queryPhone = searchParams.get("phone") === "1";
+    if (queryProject) {
+      setProjectId(queryProject);
+    }
+    if (queryToken) {
+      setPhoneToken(queryToken);
+    }
+    setPhoneMode(queryPhone || Boolean(queryToken));
+  }, []);
 
   const loadProviderKeys = async (project: string) => {
     const res = await fetch(
@@ -127,12 +164,29 @@ export default function HomePage() {
     setMembers((await res.json()) as ProjectMember[]);
   };
 
+  const loadInbox = async (project: string) => {
+    const res = await fetch(
+      phoneToken
+        ? `${apiBase}/phone/projects/${encodeURIComponent(project)}/inbox?token=${encodeURIComponent(phoneToken)}`
+        : `${apiBase}/projects/${encodeURIComponent(project)}/inbox`,
+      phoneToken ? undefined : { headers: { "x-ai-user-id": userId } }
+    );
+    if (!res.ok) {
+      setInboxMessages([]);
+      return;
+    }
+    setInboxMessages((await res.json()) as InboxMessage[]);
+  };
+
   useEffect(() => {
-    void loadProviderKeys(projectId);
-    void loadToolInvocations(projectId);
-    void loadToolPermissions(projectId);
-    void loadMembers(projectId);
-  }, [projectId, userId]);
+    if (!phoneMode) {
+      void loadProviderKeys(projectId);
+      void loadToolInvocations(projectId);
+      void loadToolPermissions(projectId);
+      void loadMembers(projectId);
+    }
+    void loadInbox(projectId);
+  }, [projectId, userId, phoneMode, phoneToken]);
 
   useEffect(() => {
     void loadTools();
@@ -281,6 +335,72 @@ export default function HomePage() {
     await loadMembers(projectId);
   };
 
+  const onAddInboxMessage = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    setInfo(null);
+    const res = await fetch(
+      phoneToken
+        ? `${apiBase}/phone/projects/${encodeURIComponent(projectId)}/inbox?token=${encodeURIComponent(phoneToken)}`
+        : `${apiBase}/projects/${encodeURIComponent(projectId)}/inbox`,
+      phoneToken
+        ? {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ body: inboxBody }),
+          }
+        : {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-ai-user-id": userId },
+            body: JSON.stringify({ body: inboxBody }),
+          }
+    );
+    if (!res.ok) {
+      setError(`Inbox message failed (${res.status})`);
+      return;
+    }
+    setInboxBody("");
+    setInfo("Message saved to inbox");
+    await loadInbox(projectId);
+  };
+
+  const onGeneratePhoneLink = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    setInfo(null);
+    const res = await fetch(`${apiBase}/projects/${encodeURIComponent(projectId)}/phone-link`, {
+      method: "POST",
+      headers: { "x-ai-user-id": userId },
+    });
+    if (!res.ok) {
+      setError(`Phone link generation failed (${res.status})`);
+      return;
+    }
+    const payload = (await res.json()) as PhoneLink;
+    setPhoneLink(payload);
+    setPhoneToken(payload.phoneToken);
+    setPhoneMode(true);
+    setInfo("Generated a new phone link");
+  };
+
+  const onChangeInboxStatus = async (messageId: string, status: InboxMessage["status"]) => {
+    setError(null);
+    setInfo(null);
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000"}/projects/${encodeURIComponent(projectId)}/inbox/${encodeURIComponent(messageId)}/status`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-ai-user-id": userId },
+        body: JSON.stringify({ status }),
+      }
+    );
+    if (!res.ok) {
+      setError(`Inbox status update failed (${res.status})`);
+      return;
+    }
+    await loadInbox(projectId);
+  };
+
   const onRemoveMember = async (targetUserId: string) => {
     setError(null);
     setInfo(null);
@@ -315,194 +435,285 @@ export default function HomePage() {
     await loadMembers(projectId);
   };
 
+  const phoneShareUrl =
+    phoneLink?.shareUrl ??
+    (phoneToken ? `${webBase}/?projectId=${encodeURIComponent(projectId)}&phone=1&token=${encodeURIComponent(phoneToken)}` : "");
+
   return (
-    <main className="shell">
+    <main className={`shell ${phoneMode ? "shell-phone" : ""}`}>
       <section className="hero">
         <h1>Limitless Agentic Playground</h1>
-        <p>Run ideas fast, route across models, and evolve toward autonomous workflows without losing control.</p>
+        <p>{phoneMode ? "Phone mode is active. Use the share link to send instructions without desktop auth." : "Use the inbox to send short instructions from your phone, then pick up the build in the same workspace."}</p>
       </section>
-      <section className="panel">
-        <form onSubmit={onSaveProviderKey}>
-          <h3>Project Provider Keys</h3>
-          <label>User ID</label>
-          <input value={userId} onChange={(e) => setUserId(e.target.value)} />
-          <label>Project ID</label>
-          <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
-          <label>Provider</label>
-          <select value={keyProvider} onChange={(e) => setKeyProvider(e.target.value as Provider)}>
-            {providers.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-          <label>API Key</label>
-          <input
-            type="password"
-            value={providerKey}
-            onChange={(e) => setProviderKey(e.target.value)}
-            placeholder="Paste provider key"
-          />
-          <button className="cta" type="submit">
-            Save Provider Key
-          </button>
-          <button className="cta cta-secondary" type="button" onClick={() => loadProviderKeys(projectId)}>
-            Refresh Configured Providers
-          </button>
-          {configuredProviders.length > 0 ? (
-            <p>Configured: {configuredProviders.join(", ")}</p>
-          ) : (
-            <p>Configured: none</p>
-          )}
-        </form>
-      </section>
-      <section className="panel">
-        <form onSubmit={onAddMember}>
-          <h3>Project Members</h3>
-          <label>User ID</label>
-          <input value={userId} onChange={(e) => setUserId(e.target.value)} />
-          <label>Project ID</label>
-          <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
-          <label>Member User ID</label>
-          <input value={memberUserId} onChange={(e) => setMemberUserId(e.target.value)} placeholder="Invite user id" />
-          <label>Role</label>
-          <select value={memberRole} onChange={(e) => setMemberRole(e.target.value as ProjectMember["role"])}>
-            <option value="viewer">viewer</option>
-            <option value="editor">editor</option>
-            <option value="owner">owner</option>
-          </select>
-          <button className="cta" type="submit">
-            Save Member
-          </button>
-          <button className="cta cta-secondary" type="button" onClick={() => loadMembers(projectId)}>
-            Refresh Members
-          </button>
-        </form>
-        {members.length > 0 ? (
-          <div className="grid">
-            {members.map((member) => (
-              <article className="metric" key={member.userId}>
-                <small>{member.displayName}</small>
-                <strong>{member.role}</strong>
-                <p>{member.userId}</p>
-                <div className="member-actions">
-                  <button type="button" className="cta cta-secondary" onClick={() => onChangeMemberRole(member.userId, "viewer")}>
-                    Viewer
-                  </button>
-                  <button type="button" className="cta cta-secondary" onClick={() => onChangeMemberRole(member.userId, "editor")}>
-                    Editor
-                  </button>
-                  <button type="button" className="cta cta-secondary" onClick={() => onRemoveMember(member.userId)}>
-                    Remove
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        ) : null}
-      </section>
-      <section className="panel">
-        <form onSubmit={onSubmit}>
-          <label>User ID</label>
-          <input value={userId} onChange={(e) => setUserId(e.target.value)} />
-          <label>Project ID</label>
-          <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
-          <label>Provider</label>
-          <select value={provider} onChange={(e) => setProvider(e.target.value as Provider)}>
-            {providers.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-          <label>Model</label>
-          <input value={model} onChange={(e) => setModel(e.target.value)} />
-          <label>Temperature</label>
-          <input
-            type="number"
-            min={0}
-            max={2}
-            step={0.1}
-            value={temperature}
-            onChange={(e) => setTemperature(Number(e.target.value))}
-          />
-          <label>Prompt</label>
-          <textarea rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-          <button className="cta" type="submit">
-            Queue Run
-          </button>
-        </form>
-        {error ? <p>{error}</p> : null}
-        {info ? <p>{info}</p> : null}
-        {runs.length > 0 ? (
-          <div className="grid">
-            {runs.map((run) => (
-              <article className="metric" key={run.id}>
-                <small>{run.model}</small>
-                <strong>{run.status}</strong>
-                <p>{run.outputText || "Waiting for stream..."}</p>
-                {run.errorText ? <p className="run-error">Error: {run.errorText}</p> : null}
-              </article>
-            ))}
-          </div>
-        ) : null}
-      </section>
-      <section className="panel">
-        <form onSubmit={onInvokeTool}>
-          <h3>Project Tools</h3>
-          <label>User ID</label>
-          <input value={userId} onChange={(e) => setUserId(e.target.value)} />
-          <label>Project ID</label>
-          <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
-          <label>Tool</label>
-          <select
-            value={selectedTool}
-            onChange={(e) => {
-              setSelectedTool(e.target.value);
-              setToolInput(defaultToolInput(e.target.value));
-            }}
-          >
-            {tools.map((tool) => (
-              <option key={tool.name} value={tool.name}>
-                {tool.name}
-              </option>
-            ))}
-          </select>
-          {toolPermissions.length > 0 ? (
-            <div className="tool-permissions">
-              {toolPermissions.map((tool) => (
-                <label className="tool-toggle" key={tool.name}>
-                  <input
-                    type="checkbox"
-                    checked={tool.enabled}
-                    onChange={(e) => onToggleToolPermission(tool.name, e.target.checked)}
-                  />
-                  <span>{tool.name}</span>
-                </label>
-              ))}
-            </div>
+      <section className="panel panel-phone">
+        <form onSubmit={onAddInboxMessage}>
+          <h3>Command Inbox</h3>
+          {!phoneMode ? (
+            <>
+              <label>User ID</label>
+              <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+            </>
           ) : null}
-          <label>Input JSON</label>
-          <textarea rows={6} value={toolInput} onChange={(e) => setToolInput(e.target.value)} />
+          <label>Project ID</label>
+          <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
+          {phoneMode ? (
+            <>
+              <label>Phone Token</label>
+              <input value={phoneToken} onChange={(e) => setPhoneToken(e.target.value)} />
+            </>
+          ) : null}
+          <label>Message</label>
+          <textarea
+            rows={4}
+            value={inboxBody}
+            onChange={(e) => setInboxBody(e.target.value)}
+            placeholder="e.g. continue building the phone inbox, add a markdown preview, and make the tools panel more compact"
+          />
           <button className="cta" type="submit">
-            Run Tool
+            Save Message
           </button>
-          <button className="cta cta-secondary" type="button" onClick={() => loadToolInvocations(projectId)}>
-            Refresh Invocations
+          <button className="cta cta-secondary" type="button" onClick={() => loadInbox(projectId)}>
+            Refresh Inbox
           </button>
         </form>
-        {toolInvocations.length > 0 ? (
+        {phoneShareUrl ? (
+          <p className="phone-link">
+            Share link: <code>{phoneShareUrl}</code>
+            <button
+              type="button"
+              className="cta cta-secondary"
+              onClick={async () => {
+                await navigator.clipboard.writeText(phoneShareUrl);
+                setInfo("Copied phone link");
+              }}
+            >
+              Copy
+            </button>
+          </p>
+        ) : null}
+        {inboxMessages.length > 0 ? (
           <div className="grid">
-            {toolInvocations.map((invocation) => (
-              <article className="metric" key={invocation.id}>
-                <small>{invocation.toolName}</small>
-                <strong>{invocation.status}</strong>
-                <pre>{JSON.stringify(invocation.output ?? invocation.errorText, null, 2)}</pre>
+            {inboxMessages.map((message) => (
+              <article className="metric" key={message.id}>
+                <small>{message.userId}</small>
+                <strong>{message.status}</strong>
+                <p>{message.body}</p>
+                {!phoneMode ? (
+                  <div className="member-actions">
+                    <button type="button" className="cta cta-secondary" onClick={() => onChangeInboxStatus(message.id, "open")}>
+                      Open
+                    </button>
+                    <button type="button" className="cta cta-secondary" onClick={() => onChangeInboxStatus(message.id, "working")}>
+                      Working
+                    </button>
+                    <button type="button" className="cta cta-secondary" onClick={() => onChangeInboxStatus(message.id, "done")}>
+                      Done
+                    </button>
+                  </div>
+                ) : null}
               </article>
             ))}
           </div>
         ) : null}
       </section>
+      {!phoneMode ? (
+        <>
+          <section className="panel">
+            <form onSubmit={onGeneratePhoneLink}>
+              <h3>Phone Access</h3>
+              <label>User ID</label>
+              <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+              <label>Project ID</label>
+              <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
+              <button className="cta" type="submit">
+                Generate Phone Link
+              </button>
+            </form>
+          </section>
+          <section className="panel">
+            <form onSubmit={onSaveProviderKey}>
+              <h3>Project Provider Keys</h3>
+              <label>User ID</label>
+              <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+              <label>Project ID</label>
+              <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
+              <label>Provider</label>
+              <select value={keyProvider} onChange={(e) => setKeyProvider(e.target.value as Provider)}>
+                {providers.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+              <label>API Key</label>
+              <input
+                type="password"
+                value={providerKey}
+                onChange={(e) => setProviderKey(e.target.value)}
+                placeholder="Paste provider key"
+              />
+              <button className="cta" type="submit">
+                Save Provider Key
+              </button>
+              <button className="cta cta-secondary" type="button" onClick={() => loadProviderKeys(projectId)}>
+                Refresh Configured Providers
+              </button>
+              {configuredProviders.length > 0 ? (
+                <p>Configured: {configuredProviders.join(", ")}</p>
+              ) : (
+                <p>Configured: none</p>
+              )}
+            </form>
+          </section>
+          <section className="panel">
+            <form onSubmit={onAddMember}>
+              <h3>Project Members</h3>
+              <label>User ID</label>
+              <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+              <label>Project ID</label>
+              <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
+              <label>Member User ID</label>
+              <input value={memberUserId} onChange={(e) => setMemberUserId(e.target.value)} placeholder="Invite user id" />
+              <label>Role</label>
+              <select value={memberRole} onChange={(e) => setMemberRole(e.target.value as ProjectMember["role"])}>
+                <option value="viewer">viewer</option>
+                <option value="editor">editor</option>
+                <option value="owner">owner</option>
+              </select>
+              <button className="cta" type="submit">
+                Save Member
+              </button>
+              <button className="cta cta-secondary" type="button" onClick={() => loadMembers(projectId)}>
+                Refresh Members
+              </button>
+            </form>
+            {members.length > 0 ? (
+              <div className="grid">
+                {members.map((member) => (
+                  <article className="metric" key={member.userId}>
+                    <small>{member.displayName}</small>
+                    <strong>{member.role}</strong>
+                    <p>{member.userId}</p>
+                    <div className="member-actions">
+                      <button type="button" className="cta cta-secondary" onClick={() => onChangeMemberRole(member.userId, "viewer")}>
+                        Viewer
+                      </button>
+                      <button type="button" className="cta cta-secondary" onClick={() => onChangeMemberRole(member.userId, "editor")}>
+                        Editor
+                      </button>
+                      <button type="button" className="cta cta-secondary" onClick={() => onRemoveMember(member.userId)}>
+                        Remove
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </section>
+          <section className="panel">
+            <form onSubmit={onSubmit}>
+              <label>User ID</label>
+              <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+              <label>Project ID</label>
+              <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
+              <label>Provider</label>
+              <select value={provider} onChange={(e) => setProvider(e.target.value as Provider)}>
+                {providers.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+              <label>Model</label>
+              <input value={model} onChange={(e) => setModel(e.target.value)} />
+              <label>Temperature</label>
+              <input
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={temperature}
+                onChange={(e) => setTemperature(Number(e.target.value))}
+              />
+              <label>Prompt</label>
+              <textarea rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+              <button className="cta" type="submit">
+                Queue Run
+              </button>
+            </form>
+            {error ? <p>{error}</p> : null}
+            {info ? <p>{info}</p> : null}
+            {runs.length > 0 ? (
+              <div className="grid">
+                {runs.map((run) => (
+                  <article className="metric" key={run.id}>
+                    <small>{run.model}</small>
+                    <strong>{run.status}</strong>
+                    <p>{run.outputText || "Waiting for stream..."}</p>
+                    {run.errorText ? <p className="run-error">Error: {run.errorText}</p> : null}
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </section>
+          <section className="panel">
+            <form onSubmit={onInvokeTool}>
+              <h3>Project Tools</h3>
+              <label>User ID</label>
+              <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+              <label>Project ID</label>
+              <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
+              <label>Tool</label>
+              <select
+                value={selectedTool}
+                onChange={(e) => {
+                  setSelectedTool(e.target.value);
+                  setToolInput(defaultToolInput(e.target.value));
+                }}
+              >
+                {tools.map((tool) => (
+                  <option key={tool.name} value={tool.name}>
+                    {tool.name}
+                  </option>
+                ))}
+              </select>
+              {toolPermissions.length > 0 ? (
+                <div className="tool-permissions">
+                  {toolPermissions.map((tool) => (
+                    <label className="tool-toggle" key={tool.name}>
+                      <input
+                        type="checkbox"
+                        checked={tool.enabled}
+                        onChange={(e) => onToggleToolPermission(tool.name, e.target.checked)}
+                      />
+                      <span>{tool.name}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+              <label>Input JSON</label>
+              <textarea rows={6} value={toolInput} onChange={(e) => setToolInput(e.target.value)} />
+              <button className="cta" type="submit">
+                Run Tool
+              </button>
+              <button className="cta cta-secondary" type="button" onClick={() => loadToolInvocations(projectId)}>
+                Refresh Invocations
+              </button>
+            </form>
+            {toolInvocations.length > 0 ? (
+              <div className="grid">
+                {toolInvocations.map((invocation) => (
+                  <article className="metric" key={invocation.id}>
+                    <small>{invocation.toolName}</small>
+                    <strong>{invocation.status}</strong>
+                    <pre>{JSON.stringify(invocation.output ?? invocation.errorText, null, 2)}</pre>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        </>
+      ) : null}
     </main>
   );
 }

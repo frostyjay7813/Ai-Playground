@@ -91,6 +91,16 @@ export const canManageProject = async (projectId: string, userId: string): Promi
   return Boolean(result.rowCount);
 };
 
+export const canEditProject = async (projectId: string, userId: string): Promise<boolean> => {
+  const result = await db.query(
+    `select 1
+     from project_members
+     where project_id = $1 and user_id = $2 and role in ('owner', 'editor')`,
+    [projectId, userId]
+  );
+  return Boolean(result.rowCount);
+};
+
 export const listProjectMembers = async (projectId: string) =>
   db.query(
     `select pm.project_id, pm.user_id, pm.role, pm.created_at, u.display_name
