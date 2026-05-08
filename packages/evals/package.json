@@ -1,0 +1,11 @@
+{
+  "name": "@ai-playground/evals",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "echo \"evals build noop\"",
+    "typecheck": "echo \"evals typecheck noop\""
+  }
+}

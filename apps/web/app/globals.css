@@ -1,0 +1,151 @@
+:root {
+  --bg-0: #f6efe6;
+  --bg-1: #ffe7c4;
+  --ink: #11223b;
+  --ink-soft: #3d4f66;
+  --accent: #f0542d;
+  --card: #fff9ef;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at 10% 10%, var(--bg-1), var(--bg-0) 55%);
+}
+
+.shell {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 48px 20px 64px;
+}
+
+.hero {
+  margin-bottom: 28px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2rem, 5vw, 3.6rem);
+  line-height: 1.06;
+}
+
+.hero p {
+  max-width: 60ch;
+  color: var(--ink-soft);
+}
+
+.panel {
+  border: 2px solid #f0d7b1;
+  background: var(--card);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 8px 30px rgba(31, 34, 49, 0.08);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.metric {
+  border: 1px solid #ecd2ab;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.metric small {
+  display: block;
+  color: var(--ink-soft);
+}
+
+.metric strong {
+  font-size: 1.6rem;
+}
+
+.run-error {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.cta {
+  margin-top: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  padding: 10px 16px;
+  font-weight: 600;
+}
+
+.cta-secondary {
+  background: #1f4f87;
+  margin-left: 8px;
+}
+
+form {
+  display: grid;
+  gap: 8px;
+}
+
+label {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #d8bc95;
+  padding: 10px;
+  font: inherit;
+  background: #fffdfa;
+}
+
+pre {
+  overflow: auto;
+  margin: 10px 0 0;
+  border-radius: 8px;
+  background: #11223b;
+  color: #fffdfa;
+  padding: 10px;
+  font-size: 0.85rem;
+}
+
+.tool-permissions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.tool-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d8bc95;
+  border-radius: 8px;
+  background: #fffdfa;
+  padding: 8px 10px;
+  font-weight: 600;
+}
+
+.tool-toggle input {
+  width: auto;
+}
+
+.member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}

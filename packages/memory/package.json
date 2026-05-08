@@ -1,0 +1,11 @@
+{
+  "name": "@ai-playground/memory",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "echo \"memory build noop\"",
+    "typecheck": "echo \"memory typecheck noop\""
+  }
+}

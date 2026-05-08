@@ -1,0 +1,19 @@
+{
+  "name": "ai-playground",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -ws --if-present build",
+    "dev": "npm run -ws --if-present dev",
+    "typecheck": "npm run -ws --if-present typecheck",
+    "lint": "npm run -ws --if-present lint",
+    "db:migrate": "node infra/db/migrate.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
