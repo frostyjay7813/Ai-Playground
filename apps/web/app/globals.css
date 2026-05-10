@@ -155,7 +155,42 @@ pre {
 }
 
 .phone-link {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
   word-break: break-word;
+}
+
+.phone-link-qr {
+  padding: 12px;
+  border-radius: 16px;
+  background: #fffdfa;
+  border: 1px solid #ecd2ab;
+}
+
+.phone-link-qr svg {
+  display: block;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.status-pill-active {
+  background: #d7f5e2;
+  color: #0f6b39;
+}
+
+.status-pill-expired {
+  background: #ffe0dd;
+  color: #9b1c1c;
 }
 
 .shell-phone {

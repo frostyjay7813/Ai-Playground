@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { db } from "./db.js";
+import { resolveAuthenticatedSessionUser } from "./session.js";
 
 export type AuthUser = {
   id: string;
@@ -11,6 +12,10 @@ const getQueryUserId = (request: FastifyRequest): string | undefined => {
 };
 
 export const requireUser = async (request: FastifyRequest, reply: FastifyReply): Promise<AuthUser | null> => {
+  const sessionUser = await resolveAuthenticatedSessionUser(request);
+  if (sessionUser) {
+    return { id: sessionUser.userId };
+  }
   const headerUserId = request.headers["x-ai-user-id"];
   const userId =
     (Array.isArray(headerUserId) ? headerUserId[0] : headerUserId) ??

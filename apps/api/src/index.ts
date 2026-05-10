@@ -19,6 +19,20 @@ import {
   requireUser,
 } from "./lib/auth.js";
 import { generatePhoneToken, hashPhoneToken } from "./lib/phone.js";
+import {
+  clearOAuthReturnToCookie,
+  clearOAuthStateCookie,
+  clearSessionCookie,
+  deleteAuthSession,
+  issueAuthSession,
+  oauthReturnToCookie,
+  oauthStateCookie,
+  readOAuthReturnToCookie,
+  readOAuthStateCookie,
+  readSessionToken,
+  resolveAuthenticatedSessionUser,
+  sessionCookie,
+} from "./lib/session.js";
 import { listTools, runTool } from "./lib/tools.js";
 
 const app = Fastify({ logger: true });
@@ -53,10 +67,141 @@ const createInboxMessageSchema = z.object({
 const updateInboxMessageSchema = z.object({
   status: z.enum(["open", "working", "done"]),
 });
+const sendPhoneLinkSmsSchema = z.object({
+  to: z.string().regex(/^\+[1-9]\d{7,14}$/),
+});
+
+const phoneLinkTtlMinutes = Number(process.env.PHONE_LINK_TTL_MINUTES ?? 1440);
+const phoneLinkRotateCooldownSeconds = Number(process.env.PHONE_LINK_ROTATE_COOLDOWN_SECONDS ?? 10);
+const phoneLinkSmsCooldownSeconds = Number(process.env.PHONE_LINK_SMS_COOLDOWN_SECONDS ?? 60);
+const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID ?? "";
+const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN ?? "";
+const twilioFromNumber = process.env.TWILIO_FROM_NUMBER ?? "";
+const githubClientId = process.env.GITHUB_CLIENT_ID ?? "";
+const githubClientSecret = process.env.GITHUB_CLIENT_SECRET ?? "";
+const githubRedirectUri = process.env.GITHUB_REDIRECT_URI ?? "http://localhost:4000/auth/github/callback";
+const webBaseUrl = process.env.WEB_BASE_URL ?? "http://localhost:3000";
+
+const isTwilioConfigured = () => Boolean(twilioAccountSid && twilioAuthToken && twilioFromNumber);
+const isGitHubConfigured = () => Boolean(githubClientId && githubClientSecret && githubRedirectUri);
+
+type GitHubDeviceCodeResponse = {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+  expires_in: number;
+  interval: number;
+};
+
+type GitHubTokenResponse = {
+  access_token?: string;
+  token_type?: string;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+  error_uri?: string;
+  interval?: number;
+};
+
+type GitHubProfile = {
+  id: number;
+  login: string;
+  avatarUrl: string;
+  htmlUrl: string;
+};
+
+const enforceRateLimit = async (
+  reply: { status: (code: number) => any; header: (name: string, value: string) => any },
+  key: string,
+  max: number,
+  windowMs: number
+) => {
+  const count = await redisConnection.incr(key);
+  if (count === 1) {
+    await redisConnection.pexpire(key, windowMs);
+  }
+  if (count <= max) {
+    return true;
+  }
+  const ttlMs = await redisConnection.pttl(key);
+  if (ttlMs > 0) {
+    reply.header("retry-after", String(Math.max(1, Math.ceil(ttlMs / 1000))));
+  }
+  void reply.status(429).send({
+    error: "rate_limited",
+    key,
+  });
+  return false;
+};
+
+const enforceCooldown = (
+  reply: { status: (code: number) => any; header: (name: string, value: string) => any },
+  label: string,
+  lastAt: unknown,
+  cooldownSeconds: number
+) => {
+  if (!lastAt || cooldownSeconds <= 0) return true;
+  const lastMs = new Date(String(lastAt)).getTime();
+  if (Number.isNaN(lastMs)) return true;
+  const now = Date.now();
+  const cooldownMs = cooldownSeconds * 1000;
+  const remainingMs = lastMs + cooldownMs - now;
+  if (remainingMs <= 0) return true;
+  const retryAfterSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
+  reply.header("retry-after", String(retryAfterSeconds));
+  void reply.status(429).send({
+    error: "cooldown",
+    label,
+    retryAfterSeconds,
+  });
+  return false;
+};
 
 const readPhoneToken = (request: { query?: unknown }) => {
   const query = request.query as { token?: string } | undefined;
   return query?.token;
+};
+
+const getPhoneLinkExpiryDate = () => new Date(Date.now() + phoneLinkTtlMinutes * 60 * 1000);
+
+const buildPhoneShareUrl = (projectId: string, phoneToken: string) => {
+  return `${webBaseUrl}/?projectId=${encodeURIComponent(projectId)}&phone=1&token=${encodeURIComponent(phoneToken)}`;
+};
+
+const fetchGitHubJson = async <T>(url: string, init: RequestInit) => {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      accept: "application/json",
+      "content-type": "application/x-www-form-urlencoded",
+      "user-agent": "AI-Playground",
+      ...(init.headers ?? {}),
+    },
+  });
+  const payload = (await response.json()) as T;
+  return { response, payload };
+};
+
+const fetchGitHubProfile = async (accessToken: string): Promise<GitHubProfile> => {
+  const response = await fetch("https://api.github.com/user", {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${accessToken}`,
+      "user-agent": "AI-Playground",
+      "x-github-api-version": "2022-11-28",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub profile request failed (${response.status})`);
+  }
+  const payload = (await response.json()) as { id: number; login: string; avatar_url: string; html_url: string };
+  return {
+    id: payload.id,
+    login: payload.login,
+    avatarUrl: payload.avatar_url,
+    htmlUrl: payload.html_url,
+  };
 };
 
 const validatePhoneAccess = async (projectId: string, token: string) => {
@@ -64,7 +209,7 @@ const validatePhoneAccess = async (projectId: string, token: string) => {
   const result = await db.query(
     `select phone_user_id
      from project_phone_links
-     where project_id = $1 and token_hash = $2`,
+     where project_id = $1 and token_hash = $2 and (expires_at is null or expires_at > now())`,
     [projectId, tokenHash]
   );
   if (!result.rowCount) {
@@ -81,11 +226,186 @@ const validatePhoneAccess = async (projectId: string, token: string) => {
 
 await app.register(cors, {
   origin: true,
-  methods: ["GET", "POST", "OPTIONS"],
+  credentials: true,
+  methods: ["GET", "POST", "DELETE", "OPTIONS"],
   allowedHeaders: ["content-type", "x-ai-user-id"],
 });
 
 app.get("/health", async () => ({ service: "api", ok: true }));
+
+app.get("/auth/github/config", async () => ({
+  configured: isGitHubConfigured(),
+}));
+
+app.get("/auth/me", async (request) => {
+  const sessionUser = await resolveAuthenticatedSessionUser(request);
+  if (!sessionUser) {
+    return { authenticated: false };
+  }
+  return {
+    authenticated: true,
+    userId: sessionUser.userId,
+    displayName: sessionUser.displayName,
+    provider: sessionUser.provider,
+    avatarUrl: sessionUser.avatarUrl,
+    profileUrl: sessionUser.profileUrl,
+  };
+});
+
+app.get("/auth/logout", async (request, reply) => {
+  const sessionToken = readSessionToken(request);
+  if (sessionToken) {
+    await deleteAuthSession(sessionToken);
+  }
+  reply.header("Set-Cookie", clearSessionCookie());
+  return reply.code(302).header("Location", webBaseUrl).send();
+});
+
+app.get("/auth/github/start", async (request, reply) => {
+  if (!isGitHubConfigured()) {
+    return reply.status(400).send({
+      error: "github_not_configured",
+      message: "Set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and GITHUB_REDIRECT_URI.",
+    });
+  }
+  const query = request.query as { returnTo?: string; login?: string } | undefined;
+  const requestedReturnTo = query?.returnTo ?? webBaseUrl;
+  const safeReturnTo = requestedReturnTo.startsWith(webBaseUrl) ? requestedReturnTo : webBaseUrl;
+  const state = randomUUID();
+  const authorizeUrl = new URL("https://github.com/login/oauth/authorize");
+  authorizeUrl.searchParams.set("client_id", githubClientId);
+  authorizeUrl.searchParams.set("redirect_uri", githubRedirectUri);
+  authorizeUrl.searchParams.set("scope", "read:user");
+  authorizeUrl.searchParams.set("state", state);
+  if (query?.login) {
+    authorizeUrl.searchParams.set("login", query.login);
+  }
+  reply.header("Set-Cookie", [oauthStateCookie(state), oauthReturnToCookie(safeReturnTo)]);
+  return reply.code(302).header("Location", authorizeUrl.toString()).send();
+});
+
+app.get("/auth/github/callback", async (request, reply) => {
+  if (!isGitHubConfigured()) {
+    return reply.status(400).send({
+      error: "github_not_configured",
+      message: "Set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and GITHUB_REDIRECT_URI.",
+    });
+  }
+  const query = request.query as { code?: string; state?: string } | undefined;
+  const code = query?.code;
+  const state = query?.state;
+  const expectedState = readOAuthStateCookie(request);
+  const returnTo = readOAuthReturnToCookie(request) ?? webBaseUrl;
+  if (!code || !state || !expectedState || state !== expectedState) {
+    return reply.status(400).send({ error: "invalid_oauth_state" });
+  }
+  const { response, payload } = await fetchGitHubJson<GitHubTokenResponse>(
+    "https://github.com/login/oauth/access_token",
+    {
+      method: "POST",
+      body: new URLSearchParams({
+        client_id: githubClientId,
+        client_secret: githubClientSecret,
+        code,
+        redirect_uri: githubRedirectUri,
+        state,
+      }),
+    }
+  );
+  if (!response.ok || !payload.access_token) {
+    return reply.status(502).send({
+      error: "github_login_failed",
+      message: payload.error_description ?? "GitHub login failed.",
+    });
+  }
+  const profile = await fetchGitHubProfile(payload.access_token);
+  const userId = `github:${profile.id}`;
+  await db.query(
+    `insert into users (id, display_name, provider, provider_user_id, avatar_url, profile_url)
+     values ($1, $2, 'github', $3, $4, $5)
+     on conflict (provider, provider_user_id)
+     do update set display_name = excluded.display_name,
+                   avatar_url = excluded.avatar_url,
+                   profile_url = excluded.profile_url`,
+    [userId, profile.login, String(profile.id), profile.avatarUrl, profile.htmlUrl]
+  );
+  const session = await issueAuthSession(userId, "github");
+  reply.header("Set-Cookie", [sessionCookie(session.sessionToken), clearOAuthStateCookie(), clearOAuthReturnToCookie()]);
+  return reply.code(302).header("Location", returnTo.startsWith(webBaseUrl) ? returnTo : webBaseUrl).send();
+});
+
+app.post("/auth/github/device", async (_request, reply) => {
+  if (!isGitHubConfigured()) {
+    return reply.status(400).send({
+      error: "github_not_configured",
+      message: "Set GITHUB_CLIENT_ID to enable GitHub login.",
+    });
+  }
+  const { response, payload } = await fetchGitHubJson<GitHubDeviceCodeResponse>(
+    "https://github.com/login/device/code",
+    {
+      method: "POST",
+      body: new URLSearchParams({
+        client_id: githubClientId,
+        scope: "read:user",
+      }),
+    }
+  );
+  if (!response.ok) {
+    return reply.status(502).send({
+      error: "github_device_start_failed",
+      message: (payload as { error_description?: string }).error_description ?? "GitHub device flow could not start.",
+    });
+  }
+  return payload;
+});
+
+const githubDevicePollSchema = z.object({
+  deviceCode: z.string().min(1),
+});
+
+app.post("/auth/github/device/poll", async (request, reply) => {
+  if (!isGitHubConfigured()) {
+    return reply.status(400).send({
+      error: "github_not_configured",
+      message: "Set GITHUB_CLIENT_ID to enable GitHub login.",
+    });
+  }
+  const parsed = githubDevicePollSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "invalid_request",
+      details: parsed.error.flatten(),
+    });
+  }
+  const { response, payload } = await fetchGitHubJson<GitHubTokenResponse>(
+    "https://github.com/login/oauth/access_token",
+    {
+      method: "POST",
+      body: new URLSearchParams({
+        client_id: githubClientId,
+        device_code: parsed.data.deviceCode,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      }),
+    }
+  );
+
+  if (!response.ok || !payload.access_token) {
+    const error = payload.error ?? "authorization_pending";
+    const status = error === "authorization_pending" || error === "slow_down" ? 202 : 400;
+    return reply.status(status).send({
+      error: `github_${error}`,
+      message: payload.error_description ?? "GitHub authorization is still pending.",
+      interval: payload.interval ?? null,
+    });
+  }
+
+  const profile = await fetchGitHubProfile(payload.access_token);
+  return {
+    accessToken: payload.access_token,
+    profile,
+  };
+});
 
 app.get("/projects/:projectId/inbox", async (request, reply) => {
   const user = await requireUser(request, reply);
@@ -115,6 +435,7 @@ app.get("/projects/:projectId/inbox", async (request, reply) => {
 
 app.get("/phone/projects/:projectId/inbox", async (request, reply) => {
   const { projectId } = request.params as { projectId: string };
+  if (!(await enforceRateLimit(reply, `phone_inbox_get:${projectId}:${request.ip}`, 60, 60_000))) return;
   const token = readPhoneToken(request);
   if (!token) {
     return reply.status(401).send({ error: "missing_token" });
@@ -144,6 +465,7 @@ app.get("/phone/projects/:projectId/inbox", async (request, reply) => {
 
 app.post("/phone/projects/:projectId/inbox", async (request, reply) => {
   const { projectId } = request.params as { projectId: string };
+  if (!(await enforceRateLimit(reply, `phone_inbox_post:${projectId}:${request.ip}`, 20, 60_000))) return;
   const token = readPhoneToken(request);
   if (!token) {
     return reply.status(401).send({ error: "missing_token" });
@@ -265,30 +587,40 @@ app.post("/projects/:projectId/phone-link", async (request, reply) => {
   const user = await requireUser(request, reply);
   if (!user) return;
   const { projectId } = request.params as { projectId: string };
+  if (!(await enforceRateLimit(reply, `phone_link_generate:${projectId}:${user.id}`, 10, 60_000))) return;
   await createOwnedProject(projectId, user.id);
   if (!(await canManageProject(projectId, user.id))) {
     return reply.status(403).send({ error: "forbidden" });
   }
+  const previous = await db.query(
+    `select rotated_at
+     from project_phone_links
+     where project_id = $1`,
+    [projectId]
+  );
+  if (!enforceCooldown(reply, "phone_link_rotate", previous.rows[0]?.rotated_at, phoneLinkRotateCooldownSeconds)) return;
   const phoneToken = generatePhoneToken();
   const phoneUserId = randomUUID();
   const tokenHash = hashPhoneToken(phoneToken);
+  const expiresAt = getPhoneLinkExpiryDate();
   await db.query(`insert into users (id, display_name) values ($1, $2)`, [phoneUserId, "Phone Inbox"]);
   await db.query(
-    `insert into project_phone_links (project_id, phone_user_id, token_hash, created_by)
-     values ($1, $2, $3, $4)
+    `insert into project_phone_links (project_id, phone_user_id, token_hash, created_by, expires_at)
+     values ($1, $2, $3, $4, $5::timestamptz)
      on conflict (project_id)
      do update set phone_user_id = excluded.phone_user_id,
                    token_hash = excluded.token_hash,
                    created_by = excluded.created_by,
+                   expires_at = excluded.expires_at,
                    rotated_at = now(),
                    last_used_at = null`,
-    [projectId, phoneUserId, tokenHash, user.id]
+    [projectId, phoneUserId, tokenHash, user.id, expiresAt.toISOString()]
   );
-  const baseUrl = process.env.WEB_BASE_URL ?? "http://localhost:3000";
   return {
     projectId,
     phoneToken,
-    shareUrl: `${baseUrl}/?projectId=${encodeURIComponent(projectId)}&phone=1&token=${encodeURIComponent(phoneToken)}`,
+    expiresAt,
+    shareUrl: buildPhoneShareUrl(projectId, phoneToken),
   };
 });
 
@@ -300,7 +632,7 @@ app.get("/projects/:projectId/phone-link", async (request, reply) => {
     return reply.status(403).send({ error: "forbidden" });
   }
   const result = await db.query(
-    `select created_at, rotated_at, last_used_at
+    `select created_at, rotated_at, last_used_at, expires_at, last_sms_sent_at, last_sms_to
      from project_phone_links
      where project_id = $1`,
     [projectId]
@@ -311,9 +643,127 @@ app.get("/projects/:projectId/phone-link", async (request, reply) => {
   return {
     projectId,
     configured: true,
+    twilioConfigured: isTwilioConfigured(),
     createdAt: result.rows[0]?.created_at,
     rotatedAt: result.rows[0]?.rotated_at,
     lastUsedAt: result.rows[0]?.last_used_at,
+    expiresAt: result.rows[0]?.expires_at,
+    lastSmsSentAt: result.rows[0]?.last_sms_sent_at,
+    lastSmsTo: result.rows[0]?.last_sms_to,
+  };
+});
+
+app.delete("/projects/:projectId/phone-link", async (request, reply) => {
+  const user = await requireUser(request, reply);
+  if (!user) return;
+  const { projectId } = request.params as { projectId: string };
+  if (!(await canManageProject(projectId, user.id))) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  await db.query(`delete from project_phone_links where project_id = $1`, [projectId]);
+  return reply.status(204).send();
+});
+
+app.post("/projects/:projectId/phone-link/sms", async (request, reply) => {
+  const user = await requireUser(request, reply);
+  if (!user) return;
+  const { projectId } = request.params as { projectId: string };
+  if (!(await enforceRateLimit(reply, `phone_link_sms:${projectId}:${user.id}`, 5, 60_000))) return;
+  if (!(await canManageProject(projectId, user.id))) {
+    return reply.status(403).send({ error: "forbidden" });
+  }
+  const parsed = sendPhoneLinkSmsSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "invalid_request",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  const existing = await db.query(
+    `select phone_user_id, last_sms_sent_at, rotated_at
+     from project_phone_links
+     where project_id = $1`,
+    [projectId]
+  );
+  if (!enforceCooldown(reply, "phone_link_sms", existing.rows[0]?.last_sms_sent_at, phoneLinkSmsCooldownSeconds)) return;
+  if (!enforceCooldown(reply, "phone_link_rotate", existing.rows[0]?.rotated_at, phoneLinkRotateCooldownSeconds)) return;
+
+  let expiresAt = getPhoneLinkExpiryDate();
+  const phoneUserId = existing.rows[0]?.phone_user_id ? String(existing.rows[0].phone_user_id) : randomUUID();
+  if (!existing.rows[0]?.phone_user_id) {
+    await db.query(`insert into users (id, display_name) values ($1, $2)`, [phoneUserId, "Phone Inbox"]);
+  }
+  const phoneToken = generatePhoneToken();
+  const tokenHash = hashPhoneToken(phoneToken);
+  expiresAt = getPhoneLinkExpiryDate();
+  await db.query(
+    `insert into project_phone_links (project_id, phone_user_id, token_hash, created_by, expires_at)
+     values ($1, $2, $3, $4, $5::timestamptz)
+     on conflict (project_id)
+     do update set phone_user_id = excluded.phone_user_id,
+                   token_hash = excluded.token_hash,
+                   created_by = excluded.created_by,
+                   expires_at = excluded.expires_at,
+                   rotated_at = now(),
+                   last_used_at = null`,
+    [projectId, phoneUserId, tokenHash, user.id, expiresAt.toISOString()]
+  );
+  const shareUrl = buildPhoneShareUrl(projectId, phoneToken);
+
+  if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber) {
+    return {
+      projectId,
+      to: parsed.data.to,
+      smsSent: false,
+      messageSid: null,
+      shareUrl,
+      expiresAt,
+      warning: "Twilio not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER to send SMS.",
+    };
+  }
+
+  const authHeader = Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString("base64");
+  const smsBody = `AI Playground link: ${shareUrl}`;
+  const twilioResponse = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: parsed.data.to,
+        From: twilioFromNumber,
+        Body: smsBody,
+      }),
+    }
+  );
+
+  const twilioPayload = (await twilioResponse.json()) as { sid?: string; message?: string };
+  if (!twilioResponse.ok) {
+    return reply.status(502).send({
+      error: "twilio_send_failed",
+      message: twilioPayload.message ?? "Twilio request failed.",
+    });
+  }
+
+  await db.query(
+    `update project_phone_links
+     set last_sms_sent_at = now(),
+         last_sms_to = $2
+     where project_id = $1`,
+    [projectId, parsed.data.to]
+  );
+
+  return {
+    projectId,
+    to: parsed.data.to,
+    smsSent: true,
+    messageSid: twilioPayload.sid ?? null,
+    shareUrl,
+    expiresAt,
   };
 });
 

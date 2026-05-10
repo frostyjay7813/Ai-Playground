@@ -93,6 +93,30 @@ The local auth boundary is user-scoped by `x-ai-user-id` (or `?userId=` for SSE 
 The `Command Inbox` section at the top of the app is the phone-friendly entry point. It stores short instructions per project, lets project editors mark them as `open`, `working`, or `done`, and keeps the latest messages visible in the same workspace.
 
 Owners can also generate a project phone link from the UI. That link opens a reduced phone mode with a project-scoped token, so you can send instructions from your phone without typing a desktop user ID.
+Phone links now expire automatically (`PHONE_LINK_TTL_MINUTES`, default `1440`).
+The app now shows a QR code and share/copy actions for the phone link, so SMS delivery is optional.
+
+GitHub login now uses redirect OAuth. Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `GITHUB_REDIRECT_URI` to enable it, then use `Sign in with GitHub` in the app. The signed-in GitHub account becomes the active workspace identity.
+
+To send a fresh link by SMS, configure Twilio env vars and call:
+
+```bash
+curl -X POST http://localhost:4000/projects/default/phone-link/sms \
+  -H "x-ai-user-id: local" \
+  -H "content-type: application/json" \
+  -d '{"to":"+16592573794"}'
+```
+
+Required env vars:
+
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+- `GITHUB_REDIRECT_URI`
+- `AUTH_SESSION_TTL_DAYS`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_FROM_NUMBER`
+- `WEB_BASE_URL`
 
 ## Tools
 

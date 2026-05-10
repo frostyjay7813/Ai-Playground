@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import type { Provider, Run } from "@ai-playground/sdk";
+import QRCode from "react-qr-code";
 
 const providers: Provider[] = ["openai", "anthropic", "google"];
 type ToolSummary = {
@@ -45,8 +46,34 @@ type InboxMessage = {
 type PhoneLink = {
   projectId: string;
   phoneToken: string;
+  expiresAt?: string;
   shareUrl: string;
 };
+
+type PhoneLinkStatus = {
+  projectId: string;
+  configured: boolean;
+  twilioConfigured?: boolean;
+  createdAt?: string;
+  rotatedAt?: string;
+  lastUsedAt?: string;
+  expiresAt?: string;
+  lastSmsSentAt?: string;
+  lastSmsTo?: string;
+};
+
+type AuthSession =
+  | {
+      authenticated: true;
+      userId: string;
+      displayName: string;
+      provider: string | null;
+      avatarUrl: string | null;
+      profileUrl: string | null;
+    }
+  | {
+      authenticated: false;
+    };
 
 const defaultToolInput = (toolName: string) => {
   if (toolName === "math.evaluate") return JSON.stringify({ expression: "2 * (8 + 4)" }, null, 2);
@@ -63,8 +90,25 @@ const defaultToolInput = (toolName: string) => {
   return JSON.stringify({ timezone: "America/Chicago" }, null, 2);
 };
 
+const userIdStorageKey = "ai-playground.user-id";
+
+const formatDuration = (milliseconds: number) => {
+  if (milliseconds <= 0) return "expired";
+  const totalSeconds = Math.ceil(milliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+  return parts.join(" ");
+};
+
 export default function HomePage() {
   const [userId, setUserId] = useState("local");
+  const [authSession, setAuthSession] = useState<AuthSession>({ authenticated: false });
+  const [githubConfigured, setGithubConfigured] = useState(false);
   const [projectId, setProjectId] = useState("default");
   const [conversationId, setConversationId] = useState<string>("");
   const [provider, setProvider] = useState<Provider>("openai");
@@ -88,6 +132,9 @@ export default function HomePage() {
   const [phoneToken, setPhoneToken] = useState("");
   const [phoneMode, setPhoneMode] = useState(false);
   const [phoneLink, setPhoneLink] = useState<PhoneLink | null>(null);
+  const [phoneLinkStatus, setPhoneLinkStatus] = useState<PhoneLinkStatus | null>(null);
+  const [phoneSmsTo, setPhoneSmsTo] = useState("");
+  const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -105,6 +152,19 @@ export default function HomePage() {
       setPhoneToken(queryToken);
     }
     setPhoneMode(queryPhone || Boolean(queryToken));
+    const storedUserId = window.localStorage.getItem(userIdStorageKey);
+    if (storedUserId) {
+      setUserId(storedUserId);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(userIdStorageKey, userId);
+  }, [userId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const loadProviderKeys = async (project: string) => {
@@ -178,18 +238,58 @@ export default function HomePage() {
     setInboxMessages((await res.json()) as InboxMessage[]);
   };
 
+  const loadPhoneLinkStatus = async (project: string) => {
+    const res = await fetch(`${apiBase}/projects/${encodeURIComponent(project)}/phone-link`, {
+      headers: { "x-ai-user-id": userId },
+    });
+    if (!res.ok) {
+      setPhoneLinkStatus(null);
+      return;
+    }
+    setPhoneLinkStatus((await res.json()) as PhoneLinkStatus);
+  };
+
+  const loadAuthSession = async () => {
+    const res = await fetch(`${apiBase}/auth/me`, { credentials: "include" });
+    if (!res.ok) {
+      setAuthSession({ authenticated: false });
+      if (userId.startsWith("github:")) {
+        setUserId("local");
+      }
+      return;
+    }
+    const payload = (await res.json()) as AuthSession;
+    setAuthSession(payload);
+    if (payload.authenticated) {
+      setUserId(payload.userId);
+    }
+  };
+
+  const loadGithubConfig = async () => {
+    const res = await fetch(`${apiBase}/auth/github/config`);
+    if (!res.ok) return;
+    const payload = (await res.json()) as { configured: boolean };
+    setGithubConfigured(payload.configured);
+  };
+
+  useEffect(() => {
+    void loadAuthSession();
+  }, []);
+
   useEffect(() => {
     if (!phoneMode) {
       void loadProviderKeys(projectId);
       void loadToolInvocations(projectId);
       void loadToolPermissions(projectId);
       void loadMembers(projectId);
+      void loadPhoneLinkStatus(projectId);
     }
     void loadInbox(projectId);
   }, [projectId, userId, phoneMode, phoneToken]);
 
   useEffect(() => {
     void loadTools();
+    void loadGithubConfig();
   }, []);
 
   const onSubmit = async (event: FormEvent) => {
@@ -379,8 +479,112 @@ export default function HomePage() {
     const payload = (await res.json()) as PhoneLink;
     setPhoneLink(payload);
     setPhoneToken(payload.phoneToken);
-    setPhoneMode(true);
+    await loadPhoneLinkStatus(projectId);
     setInfo("Generated a new phone link");
+  };
+
+  const onRevokePhoneLink = async () => {
+    setError(null);
+    setInfo(null);
+    const res = await fetch(`${apiBase}/projects/${encodeURIComponent(projectId)}/phone-link`, {
+      method: "DELETE",
+      headers: { "x-ai-user-id": userId },
+    });
+    if (!res.ok && res.status !== 204) {
+      setError(`Phone link revoke failed (${res.status})`);
+      return;
+    }
+    setPhoneLink(null);
+    setPhoneLinkStatus(null);
+    if (!phoneMode) {
+      setPhoneToken("");
+    }
+    setInfo("Revoked phone link");
+  };
+
+  const onSharePhoneLink = async () => {
+    if (!phoneShareUrl) {
+      setError("Generate a phone link first");
+      return;
+    }
+    setError(null);
+    setInfo(null);
+    try {
+      const nav: any = typeof window !== "undefined" ? window.navigator : undefined;
+      if (nav && "share" in nav) {
+        await (nav as unknown as { share: (data: { title?: string; text?: string; url?: string }) => Promise<void> }).share({
+          title: "AI Playground",
+          text: "Open phone mode:",
+          url: phoneShareUrl,
+        });
+        setInfo("Opened share sheet");
+        return;
+      }
+      if (!nav || !nav.clipboard) {
+        setError("Clipboard not available in this browser");
+        return;
+      }
+      await nav.clipboard.writeText(phoneShareUrl);
+      setInfo("Copied phone link");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Share failed");
+    }
+  };
+
+  const onCopyPhoneLink = async () => {
+    if (!phoneShareUrl) {
+      setError("Generate a phone link first");
+      return;
+    }
+    setError(null);
+    setInfo(null);
+    try {
+      await navigator.clipboard.writeText(phoneShareUrl);
+      setInfo("Copied phone link");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Copy failed");
+    }
+  };
+
+  const onSendPhoneLinkSms = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    setInfo(null);
+    const res = await fetch(`${apiBase}/projects/${encodeURIComponent(projectId)}/phone-link/sms`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-ai-user-id": userId },
+      body: JSON.stringify({ to: phoneSmsTo }),
+    });
+    const payload = (await res.json()) as {
+      shareUrl?: string;
+      message?: string;
+      warning?: string;
+      error?: string;
+      to?: string;
+      smsSent?: boolean;
+    };
+    if (!res.ok) {
+      setError(payload.message ?? payload.error ?? `Phone SMS failed (${res.status})`);
+      return;
+    }
+    if (payload.shareUrl) {
+      const parsed = new URL(payload.shareUrl);
+      const token = parsed.searchParams.get("token");
+      if (token) {
+        setPhoneToken(token);
+      }
+      setPhoneLink({
+        projectId,
+        phoneToken: token ?? "",
+        shareUrl: payload.shareUrl,
+      });
+    }
+    await loadPhoneLinkStatus(projectId);
+    if (payload.smsSent) {
+      setInfo(`Sent phone link SMS to ${payload.to ?? phoneSmsTo}`);
+    } else {
+      setInfo(payload.warning ?? "Generated a fresh phone link (SMS not sent)");
+    }
   };
 
   const onChangeInboxStatus = async (messageId: string, status: InboxMessage["status"]) => {
@@ -435,9 +639,23 @@ export default function HomePage() {
     await loadMembers(projectId);
   };
 
+  const onStartGitHubLogin = () => {
+    setError(null);
+    setInfo(null);
+    window.location.href = `${apiBase}/auth/github/start?returnTo=${encodeURIComponent(window.location.href)}`;
+  };
+
+  const onSignOut = () => {
+    setError(null);
+    setInfo(null);
+    window.location.href = `${apiBase}/auth/logout`;
+  };
+
   const phoneShareUrl =
     phoneLink?.shareUrl ??
     (phoneToken ? `${webBase}/?projectId=${encodeURIComponent(projectId)}&phone=1&token=${encodeURIComponent(phoneToken)}` : "");
+  const phoneLinkExpiryMs = phoneLinkStatus?.expiresAt ? new Date(phoneLinkStatus.expiresAt).getTime() - now : null;
+  const phoneLinkIsActive = Boolean(phoneLinkStatus?.configured && (phoneLinkExpiryMs === null || phoneLinkExpiryMs > 0));
 
   return (
     <main className={`shell ${phoneMode ? "shell-phone" : ""}`}>
@@ -445,6 +663,41 @@ export default function HomePage() {
         <h1>Limitless Agentic Playground</h1>
         <p>{phoneMode ? "Phone mode is active. Use the share link to send instructions without desktop auth." : "Use the inbox to send short instructions from your phone, then pick up the build in the same workspace."}</p>
       </section>
+      {!phoneMode ? (
+        <section className="panel">
+          <h3>Login</h3>
+          {authSession.authenticated ? (
+            <p>
+              Signed in as <strong>{authSession.displayName}</strong>{" "}
+              {authSession.profileUrl ? (
+                <a href={authSession.profileUrl} target="_blank" rel="noreferrer">
+                  Open profile
+                </a>
+              ) : null}
+            </p>
+          ) : (
+            <p>{githubConfigured ? "Sign in with GitHub to use redirect login." : "Set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and GITHUB_REDIRECT_URI to enable GitHub login."}</p>
+          )}
+          {authSession.authenticated && authSession.avatarUrl ? (
+            <img
+              src={authSession.avatarUrl}
+              alt={`Avatar for ${authSession.displayName}`}
+              width={56}
+              height={56}
+              style={{ borderRadius: "999px" }}
+            />
+          ) : null}
+          <div className="member-actions">
+            <button type="button" className="cta" onClick={onStartGitHubLogin} disabled={!githubConfigured}>
+              {authSession.authenticated ? "Reconnect GitHub" : "Sign in with GitHub"}
+            </button>
+            <button type="button" className="cta cta-secondary" onClick={onSignOut} disabled={!authSession.authenticated}>
+              Sign out
+            </button>
+          </div>
+          {authSession.authenticated ? <p>User ID: <code>{authSession.userId}</code></p> : null}
+        </section>
+      ) : null}
       <section className="panel panel-phone">
         <form onSubmit={onAddInboxMessage}>
           <h3>Command Inbox</h3>
@@ -456,12 +709,6 @@ export default function HomePage() {
           ) : null}
           <label>Project ID</label>
           <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
-          {phoneMode ? (
-            <>
-              <label>Phone Token</label>
-              <input value={phoneToken} onChange={(e) => setPhoneToken(e.target.value)} />
-            </>
-          ) : null}
           <label>Message</label>
           <textarea
             rows={4}
@@ -476,20 +723,27 @@ export default function HomePage() {
             Refresh Inbox
           </button>
         </form>
-        {phoneShareUrl ? (
-          <p className="phone-link">
-            Share link: <code>{phoneShareUrl}</code>
-            <button
-              type="button"
-              className="cta cta-secondary"
-              onClick={async () => {
-                await navigator.clipboard.writeText(phoneShareUrl);
-                setInfo("Copied phone link");
-              }}
-            >
-              Copy
-            </button>
-          </p>
+        {!phoneMode && phoneShareUrl ? (
+          <div className="phone-link">
+            <div className="phone-link-qr">
+              <QRCode value={phoneShareUrl} size={176} />
+            </div>
+            <p>Scan the QR code or copy/share the link without exposing the token inline.</p>
+            <div className="member-actions">
+              <button type="button" className="cta cta-secondary" onClick={onSharePhoneLink}>
+                Share Link…
+              </button>
+              <button type="button" className="cta cta-secondary" onClick={onCopyPhoneLink}>
+                Copy Link
+              </button>
+              <button type="button" className="cta cta-secondary" onClick={onGeneratePhoneLink}>
+                Rotate Link
+              </button>
+              <button type="button" className="cta cta-secondary" onClick={onRevokePhoneLink}>
+                Revoke Link
+              </button>
+            </div>
+          </div>
         ) : null}
         {inboxMessages.length > 0 ? (
           <div className="grid">
@@ -526,9 +780,40 @@ export default function HomePage() {
               <label>Project ID</label>
               <input value={projectId} onChange={(e) => setProjectId(e.target.value)} />
               <button className="cta" type="submit">
-                Generate Phone Link
+                Generate / Rotate Link
+              </button>
+              <button className="cta cta-secondary" type="button" onClick={onRevokePhoneLink} disabled={!phoneLinkStatus?.configured}>
+                Revoke Link
               </button>
             </form>
+            {phoneLinkStatus?.twilioConfigured ? (
+              <form onSubmit={onSendPhoneLinkSms}>
+                <label>Send Link To (via Twilio)</label>
+                <input value={phoneSmsTo} onChange={(e) => setPhoneSmsTo(e.target.value)} placeholder="+16592573794" />
+                <button className="cta" type="submit" disabled={!phoneSmsTo}>
+                  Send SMS Link
+                </button>
+                <button className="cta cta-secondary" type="button" onClick={() => loadPhoneLinkStatus(projectId)}>
+                  Refresh Link Status
+                </button>
+              </form>
+            ) : (
+              <p>
+                SMS sending is disabled (Twilio not configured). Use <strong>Share Link…</strong> instead.
+              </p>
+            )}
+            {phoneLinkStatus?.configured ? (
+              <p>
+                <span className={`status-pill ${phoneLinkIsActive ? "status-pill-active" : "status-pill-expired"}`}>
+                  {phoneLinkIsActive ? "Active" : "Expired"}
+                </span>{" "}
+                | Expires in{" "}
+                {phoneLinkExpiryMs !== null ? formatDuration(phoneLinkExpiryMs) : "n/a"} | Last SMS:{" "}
+                {phoneLinkStatus.lastSmsSentAt ?? "n/a"} {phoneLinkStatus.lastSmsTo ? `(${phoneLinkStatus.lastSmsTo})` : ""}
+              </p>
+            ) : (
+              <p>Link status: not configured</p>
+            )}
           </section>
           <section className="panel">
             <form onSubmit={onSaveProviderKey}>
