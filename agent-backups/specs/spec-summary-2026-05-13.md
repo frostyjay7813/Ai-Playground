@@ -1,6 +1,7 @@
 # Spec Summary - 2026-05-13
 
 Source: `agent_files/docs/specs/current-spec.md`
+Backup time: 2026-05-13 05:11 CDT (America/Chicago)
 
 ## Scope Snapshot
 - AI Playground is currently scoped as a project-based AI workspace with multi-provider chat, run persistence, provider key management, project ownership, controlled tool execution, and a roadmap toward retrieval-backed memory and formal eval workflows.
