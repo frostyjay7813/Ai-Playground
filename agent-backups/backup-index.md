@@ -14,6 +14,7 @@ This folder holds small, human-readable backup artifacts created by the Engineer
 - Included files:
   - `agent-backups/backup-index.md`
   - `agent-backups/memory-summary-2026-05-13.md`
+  - `agent-backups/architecture-summary-2026-05-13.md`
 
 ## Notes
 - This is a small scoped backup intended to avoid touching unrelated repository contents.
