@@ -7,16 +7,20 @@ This folder holds small, human-readable backup artifacts created by the Engineer
 - Repository: `frostyjay7813/Ai-Playground`
 - Branch: `main`
 
-## Backup Entry
-- Backup date: `2026-05-13`
+## Conventions
+- Keep backup writes scoped to `agent-backups/`
+- Prefer dated, descriptive filenames for backup snapshots
+- Do not include secrets, credentials, or unrelated project files
+
+## Backup Log
+
+### 2026-05-13
 - Backup type: `test backup`
 - Scope: `agent-backups/` only
-- Included files:
+- Files:
   - `agent-backups/backup-index.md`
   - `agent-backups/memory-summary-2026-05-13.md`
   - `agent-backups/architecture-summary-2026-05-13.md`
-
-## Notes
-- This is a small scoped backup intended to avoid touching unrelated repository contents.
-- No secrets, credentials, or unrelated project files are included.
-- Future backup entries should stay inside `agent-backups/` and update this index when appropriate.
+- Notes:
+  - Initial scoped backup set for continuity testing
+  - Created without touching unrelated repository contents
