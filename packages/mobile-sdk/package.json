@@ -1,0 +1,25 @@
+{
+  "name": "@ai-playground/mobile-sdk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./contracts/auth": "./src/contracts/auth.ts",
+    "./contracts/inbox": "./src/contracts/inbox.ts",
+    "./contracts/projects": "./src/contracts/projects.ts",
+    "./contracts/runs": "./src/contracts/runs.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
