@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { mobileRunDetailResponseSchema, mobileRunListResponseSchema } from "@ai-playground/mobile-sdk";
+import { sendApiError } from "../../lib/api-error.js";
 import { requireMobileSession } from "../../services/mobile/mobile-session-service.js";
 import { getRunByIdForUser, listRunsForProject } from "../../services/runs/run-service.js";
 import { assertMobileProjectAccess } from "../../services/mobile/mobile-project-service.js";
@@ -18,10 +19,7 @@ const mobileRunRoutes: FastifyPluginAsync = async (app) => {
     const parsedQuery = listRunsQuerySchema.safeParse(request.query);
 
     if (!parsedQuery.success) {
-      return reply.status(400).send({
-        error: "invalid_query",
-        details: parsedQuery.error.flatten(),
-      });
+      return sendApiError(reply, 400, "invalid_query", parsedQuery.error.flatten());
     }
 
     const access = await assertMobileProjectAccess({
@@ -31,7 +29,7 @@ const mobileRunRoutes: FastifyPluginAsync = async (app) => {
     });
 
     if (!access) {
-      return reply.status(403).send({ error: "forbidden" });
+      return sendApiError(reply, 403, "forbidden");
     }
 
     const runs = await listRunsForProject(projectId, parsedQuery.data.limit);
@@ -46,7 +44,7 @@ const mobileRunRoutes: FastifyPluginAsync = async (app) => {
     const run = await getRunByIdForUser(runId, session.userId, session.projectId ?? null);
 
     if (!run) {
-      return reply.status(404).send({ error: "not_found" });
+      return sendApiError(reply, 404, "not_found");
     }
 
     return mobileRunDetailResponseSchema.parse({ run });

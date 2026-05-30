@@ -1,5 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { mobileInboxListResponseSchema, postInboxMessageInputSchema } from "@ai-playground/mobile-sdk";
+import { sendApiError } from "../../lib/api-error.js";
+import { enforceInMemoryRateLimit } from "../../lib/rate-limit.js";
 import { requireMobileSession } from "../../services/mobile/mobile-session-service.js";
 import { createInboxMessage, listInboxMessages } from "../../services/inbox/inbox-service.js";
 import { assertMobileProjectAccess } from "../../services/mobile/mobile-project-service.js";
@@ -17,7 +19,7 @@ const mobileInboxRoutes: FastifyPluginAsync = async (app) => {
     });
 
     if (!access) {
-      return reply.status(403).send({ error: "forbidden" });
+      return sendApiError(reply, 403, "forbidden");
     }
 
     const messages = await listInboxMessages(projectId, 50);
@@ -25,6 +27,16 @@ const mobileInboxRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/mobile/projects/:projectId/inbox", async (request, reply) => {
+    const limiter = enforceInMemoryRateLimit({
+      bucket: `mobile-inbox-create:${request.ip}`,
+      limit: 30,
+      windowMs: 60_000,
+    });
+    if (!limiter.allowed) {
+      reply.header("retry-after", String(limiter.retryAfterSeconds ?? 60));
+      return sendApiError(reply, 429, "rate_limited");
+    }
+
     const session = await requireMobileSession(request, reply);
     if (!session) return;
 
@@ -32,10 +44,7 @@ const mobileInboxRoutes: FastifyPluginAsync = async (app) => {
     const parsed = postInboxMessageInputSchema.safeParse(request.body);
 
     if (!parsed.success) {
-      return reply.status(400).send({
-        error: "invalid_request",
-        details: parsed.error.flatten(),
-      });
+      return sendApiError(reply, 400, "invalid_request", parsed.error.flatten());
     }
 
     const access = await assertMobileProjectAccess({
@@ -45,7 +54,7 @@ const mobileInboxRoutes: FastifyPluginAsync = async (app) => {
     });
 
     if (!access) {
-      return reply.status(403).send({ error: "forbidden" });
+      return sendApiError(reply, 403, "forbidden");
     }
 
     const message = await createInboxMessage({

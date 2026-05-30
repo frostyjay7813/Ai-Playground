@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "AI Playground Mobile",
+    "slug": "ai-playground-mobile",
+    "scheme": "aiplayground",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic"
+  }
+}

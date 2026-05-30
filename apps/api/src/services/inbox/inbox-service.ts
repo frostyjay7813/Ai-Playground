@@ -10,8 +10,10 @@ export type InboxMessage = {
   updatedAt: string;
 };
 
-export const listInboxMessages = async (_projectId: string, _limit: number): Promise<InboxMessage[]> => {
-  return [];
+const inboxStore = new Map<string, InboxMessage[]>();
+
+export const listInboxMessages = async (projectId: string, limit: number): Promise<InboxMessage[]> => {
+  return (inboxStore.get(projectId) ?? []).slice(0, limit);
 };
 
 export const createInboxMessage = async ({
@@ -24,7 +26,7 @@ export const createInboxMessage = async ({
   body: string;
 }): Promise<InboxMessage> => {
   const now = new Date().toISOString();
-  return {
+  const message: InboxMessage = {
     id: `msg_${Date.now()}`,
     projectId,
     userId,
@@ -33,4 +35,8 @@ export const createInboxMessage = async ({
     createdAt: now,
     updatedAt: now,
   };
+
+  const prev = inboxStore.get(projectId) ?? [];
+  inboxStore.set(projectId, [message, ...prev]);
+  return message;
 };

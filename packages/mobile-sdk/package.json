@@ -4,12 +4,30 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./client": "./src/client.ts",
-    "./contracts/auth": "./src/contracts/auth.ts",
-    "./contracts/inbox": "./src/contracts/inbox.ts",
-    "./contracts/projects": "./src/contracts/projects.ts",
-    "./contracts/runs": "./src/contracts/runs.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./contracts/auth": {
+      "types": "./dist/contracts/auth.d.ts",
+      "import": "./dist/contracts/auth.js"
+    },
+    "./contracts/inbox": {
+      "types": "./dist/contracts/inbox.d.ts",
+      "import": "./dist/contracts/inbox.js"
+    },
+    "./contracts/projects": {
+      "types": "./dist/contracts/projects.d.ts",
+      "import": "./dist/contracts/projects.js"
+    },
+    "./contracts/runs": {
+      "types": "./dist/contracts/runs.d.ts",
+      "import": "./dist/contracts/runs.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -21,5 +39,6 @@
   },
   "devDependencies": {
     "typescript": "^5.8.3"
-  }
+  },
+  "types": "./dist/index.d.ts"
 }

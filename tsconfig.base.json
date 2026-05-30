@@ -10,10 +10,21 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@ai-playground/sdk": ["packages/sdk/src/index.ts"],
-      "@ai-playground/ai-core": ["packages/ai-core/src/index.ts"],
-      "@ai-playground/memory": ["packages/memory/src/index.js"],
-      "@ai-playground/evals": ["packages/evals/src/index.js"]
+      "@ai-playground/sdk": [
+        "packages/sdk/src/index.ts"
+      ],
+      "@ai-playground/ai-core": [
+        "packages/ai-core/src/index.ts"
+      ],
+      "@ai-playground/memory": [
+        "packages/memory/src/index.js"
+      ],
+      "@ai-playground/evals": [
+        "packages/evals/src/index.js"
+      ],
+      "@ai-playground/mobile-sdk": [
+        "packages/mobile-sdk/src/index.ts"
+      ]
     }
   }
 }
